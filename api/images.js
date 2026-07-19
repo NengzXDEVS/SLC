@@ -3,8 +3,17 @@ const router = express.Router();
 const path = require('path');
 const fs = require('fs').promises;
 const axios = require('axios');
-const sharp = require('sharp');
 const { v4: uuidv4 } = require('uuid');
+
+// Try to load sharp, but don't fail if it's not available
+let sharp;
+try {
+  sharp = require('sharp');
+  console.log('✓ Sharp image processing loaded');
+} catch (error) {
+  console.warn('⚠️ Sharp not available - image compression disabled:', error.message);
+  sharp = null;
+}
 
 const DATA_DIR = path.join(__dirname, '../data');
 const IMAGES_DIR = path.join(__dirname, '../public/images');
@@ -130,21 +139,31 @@ router.post('/:id/download', async (req, res) => {
     // Ensure images directory exists
     await fs.mkdir(IMAGES_DIR, { recursive: true });
 
-    // Get image format
-    const format = ext.includes('webp') ? 'webp' : ext.replace('.', '');
-    const jpegQuality = image.quality || 80;
+    // Try to compress with sharp if available, otherwise just save
+    if (sharp) {
+      try {
+        const format = ext.includes('webp') ? 'webp' : ext.replace('.', '');
+        const jpegQuality = image.quality || 80;
 
-    // Compress with quality
-    const sharpPipeline = sharp(buffer).withMetadata();
-    
-    if (format === 'jpeg' || format === 'jpg') {
-      await sharpPipeline.jpeg({ quality: jpegQuality }).toFile(filePath);
-    } else if (format === 'webp') {
-      await sharpPipeline.webp({ quality: jpegQuality }).toFile(filePath);
-    } else if (format === 'png') {
-      await sharpPipeline.png().toFile(filePath);
+        // Compress with quality
+        const sharpPipeline = sharp(buffer).withMetadata();
+        
+        if (format === 'jpeg' || format === 'jpg') {
+          await sharpPipeline.jpeg({ quality: jpegQuality }).toFile(filePath);
+        } else if (format === 'webp') {
+          await sharpPipeline.webp({ quality: jpegQuality }).toFile(filePath);
+        } else if (format === 'png') {
+          await sharpPipeline.png().toFile(filePath);
+        } else {
+          await sharpPipeline.toFormat(format).toFile(filePath);
+        }
+      } catch (sharpError) {
+        console.warn('Sharp compression failed, saving raw file:', sharpError.message);
+        await fs.writeFile(filePath, buffer);
+      }
     } else {
-      await sharpPipeline.toFormat(format).toFile(filePath);
+      // Sharp not available, just save the raw buffer
+      await fs.writeFile(filePath, buffer);
     }
 
     image.localPath = `/public/images/${fileName}`;
@@ -162,6 +181,11 @@ router.post('/:id/download', async (req, res) => {
 
 // Recompress image with new quality
 async function recompressImage(imageId, srcUrl, quality) {
+  if (!sharp) {
+    console.warn('Sharp not available - skipping recompression');
+    return;
+  }
+
   try {
     const ext = getImageExtension(srcUrl, 'image/jpeg');
     const fileName = `${imageId}${ext}`;

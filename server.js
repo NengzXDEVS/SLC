@@ -3,8 +3,6 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
 const fs = require('fs').promises;
-const imageRoutes = require('./api/images');
-const trackerRoutes = require('./api/tracker');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,24 +17,9 @@ app.use('/admin', express.static(path.join(__dirname, 'admin')));
 app.use('/public/images', express.static(path.join(__dirname, 'public/images')));
 app.use('/', express.static(path.join(__dirname, '.')));
 
-// API Routes
-app.use('/api/images', imageRoutes);
-app.use('/api/tracker', trackerRoutes);
-
-// Health check
+// Health check endpoint (should be before route requires)
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-// Root redirect to admin dashboard
-app.get('/admin-dashboard', (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin', 'dashboard.html'));
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: err.message });
+  res.json({ status: 'OK', timestamp: new Date().toISOString(), env: process.env.NODE_ENV || 'development' });
 });
 
 // Initialize data directory
@@ -44,11 +27,10 @@ async function initializeApp() {
   try {
     // Create data directory if it doesn't exist
     const dataDir = path.join(__dirname, 'data');
-    try {
-      await fs.access(dataDir);
-    } catch {
-      await fs.mkdir(dataDir, { recursive: true });
-    }
+    const imagesDir = path.join(__dirname, 'public/images');
+    
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.mkdir(imagesDir, { recursive: true });
 
     // Initialize images.json if it doesn't exist
     const imagesFile = path.join(dataDir, 'images.json');
@@ -59,15 +41,72 @@ async function initializeApp() {
     }
 
     console.log('✓ Application initialized');
-    console.log(`✓ Starting server on http://localhost:${PORT}`);
+    console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`✓ Server listening on port ${PORT}`);
     console.log(`✓ Admin Dashboard: http://localhost:${PORT}/admin-dashboard`);
   } catch (error) {
     console.error('Initialization error:', error);
+    // Don't crash, continue with what we have
   }
 }
 
-app.listen(PORT, () => {
-  initializeApp();
+// Load API routes after initialization
+async function loadRoutes() {
+  try {
+    const imageRoutes = require('./api/images');
+    const trackerRoutes = require('./api/tracker');
+    
+    // API Routes
+    app.use('/api/images', imageRoutes);
+    app.use('/api/tracker', trackerRoutes);
+    
+    console.log('✓ API routes loaded');
+  } catch (error) {
+    console.error('Error loading routes:', error);
+  }
+}
+
+// Admin dashboard route
+app.get('/admin-dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin', 'dashboard.html'));
 });
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found', path: req.path });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+  res.status(500).json({ error: err.message || 'Internal server error' });
+});
+
+// Start server
+async function startServer() {
+  try {
+    await initializeApp();
+    await loadRoutes();
+    
+    const server = app.listen(PORT, () => {
+      console.log(`\n✅ Server is running on port ${PORT}\n`);
+    });
+
+    // Handle graceful shutdown
+    process.on('SIGTERM', () => {
+      console.log('SIGTERM received, shutting down gracefully');
+      server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// Start the server
+startServer();
 
 module.exports = app;
